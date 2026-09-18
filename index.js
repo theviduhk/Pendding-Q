@@ -6,8 +6,8 @@ const GRAFANA_URL = `${BASE_URL}/api/datasources/proxy/29/render`;
 const USERNAME = "gss.kurunegala@gssintl.biz";
 const PASSWORD = "Gssk@2021";
 
-const FIREBASE_BASE_URL =
-  "https://sahiru-7a8a4-default-rtdb.firebaseio.com/data";
+const FIREBASE_URL =
+  "https://sahiru-7a8a4-default-rtdb.firebaseio.com/data.json";
 
 const ALLOWED_TASKS = [
   "pricing_voting",
@@ -21,15 +21,15 @@ const ALLOWED_TASKS = [
 let SESSION_ID = null;
 
 
-// ======================================================
+// ========================================
 // FORMAT DURATION
-// ======================================================
+// ========================================
 
 function formatDuration(seconds) {
 
   seconds = Number(seconds);
 
-  if (!Number.isFinite(seconds)) {
+  if (isNaN(seconds)) {
     return null;
   }
 
@@ -67,24 +67,13 @@ function formatDuration(seconds) {
 }
 
 
-// ======================================================
-// FIREBASE KEY SAFE FORMAT
-// ======================================================
-
-function firebaseKey(project, task) {
-
-  return `${project}_${task}`
-    .replace(/[.#$[\]/]/g, "_");
-}
-
-
-// ======================================================
+// ========================================
 // LOGIN
-// ======================================================
+// ========================================
 
 async function login() {
 
-  console.log("🔐 Logging into Grafana...");
+  console.log("Logging into Grafana...");
 
   const res = await axios.post(
     `${BASE_URL}/login`,
@@ -116,13 +105,13 @@ async function login() {
     .split(";")[0]
     .replace("grafana_session=", "");
 
-  console.log("✅ Grafana session created");
+  console.log("New Session created");
 }
 
 
-// ======================================================
+// ========================================
 // FETCH GRAFANA
-// ======================================================
+// ========================================
 
 async function fetchGrafana() {
 
@@ -130,27 +119,11 @@ async function fetchGrafana() {
     await login();
   }
 
-  /*
-    IMPORTANT:
-
-    total + oldestTask are requested
-    in the SAME Grafana request.
-
-    Therefore:
-
-    value
-    durationRaw
-    duration
-
-    are generated from the same fetch cycle.
-  */
-
+  // Get BOTH total and oldestTask
   const payload =
     "target=prod.gauges.selector.queue.*.*.total" +
     "&target=prod.gauges.selector.queue.*.*.oldestTask" +
-    "&from=-1h" +
-    "&until=now" +
-    "&format=json";
+    "&from=-1h&until=now&format=json";
 
   try {
 
@@ -160,10 +133,8 @@ async function fetchGrafana() {
       {
         headers: {
           Cookie: `grafana_session=${SESSION_ID}`,
-          "Content-Type":
-            "application/x-www-form-urlencoded",
-          "User-Agent":
-            "Mozilla/5.0"
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "Mozilla/5.0"
         }
       }
     );
@@ -172,17 +143,14 @@ async function fetchGrafana() {
 
   } catch (err) {
 
+    // Session expired
     if (
       err.response &&
-      (
-        err.response.status === 401 ||
-        err.response.status === 403
-      )
+      (err.response.status === 401 ||
+       err.response.status === 403)
     ) {
 
-      console.log(
-        "🔄 Grafana session expired. Re-login..."
-      );
+      console.log("Session expired. Logging in again...");
 
       await login();
 
@@ -191,12 +159,9 @@ async function fetchGrafana() {
         payload,
         {
           headers: {
-            Cookie:
-              `grafana_session=${SESSION_ID}`,
-            "Content-Type":
-              "application/x-www-form-urlencoded",
-            "User-Agent":
-              "Mozilla/5.0"
+            Cookie: `grafana_session=${SESSION_ID}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Mozilla/5.0"
           }
         }
       );
@@ -209,127 +174,29 @@ async function fetchGrafana() {
 }
 
 
-// ======================================================
-// GET LAST VALID VALUE
-// ======================================================
-
-function getLastValue(series) {
-
-  if (
-    !series ||
-    !Array.isArray(series.datapoints)
-  ) {
-    return null;
-  }
-
-  const validPoints =
-    series.datapoints.filter(
-      dp =>
-        Array.isArray(dp) &&
-        dp[0] !== null &&
-        dp[0] !== undefined
-    );
-
-  if (!validPoints.length) {
-    return null;
-  }
-
-  const last =
-    validPoints[validPoints.length - 1];
-
-  return {
-    value: Number(last[0]),
-    timestamp: last[1]
-  };
-}
-
-
-// ======================================================
-// GET EXISTING FIREBASE DATA
-// ======================================================
-
-async function getFirebaseData() {
-
-  try {
-
-    const res =
-      await axios.get(
-        `${FIREBASE_BASE_URL}.json`
-      );
-
-    return res.data || {};
-
-  } catch (err) {
-
-    console.log(
-      "⚠️ Firebase read error:",
-      err.message
-    );
-
-    return {};
-  }
-}
-
-
-// ======================================================
-// MAIN FETCH + UPDATE
-// ======================================================
+// ========================================
+// FETCH + FIREBASE
+// ========================================
 
 async function fetchAndPush() {
 
   try {
 
-    console.log("");
-    console.log("======================================");
-    console.log("🚀 GRAFANA UPDATE");
-    console.log(
-      new Date().toLocaleTimeString()
-    );
-    console.log("======================================");
+    const data = await fetchGrafana();
 
+    // project + task එකකට එක object එකක්
+    const grouped = {};
 
-    // ==================================================
-    // GET EXISTING FIREBASE
-    // ==================================================
+    data.forEach(series => {
 
-    const existingData =
-      await getFirebaseData();
-
-
-    // ==================================================
-    // GET GRAFANA
-    // ==================================================
-
-    const grafanaData =
-      await fetchGrafana();
-
-
-    // ==================================================
-    // TEMP STORAGE
-    // ==================================================
-
-    const records = {};
-
-
-    // ==================================================
-    // PROCESS ALL GRAFANA SERIES
-    // ==================================================
-
-    grafanaData.forEach(series => {
-
-      if (!series?.target) {
-        return;
-      }
-
-
-      const parts =
-        series.target.split(".");
-
+      const parts = series.target.split(".");
 
       /*
         Example:
 
         prod.gauges.selector.queue.stitching.marsbh.total
+
+        parts:
 
         0 = prod
         1 = gauges
@@ -340,257 +207,135 @@ async function fetchAndPush() {
         6 = total
       */
 
-
       if (parts.length < 7) {
         return;
       }
-
 
       const task = parts[4];
       const project = parts[5];
       const type = parts[6];
 
-
       // Ignore sand projects
-      if (
-        project.includes("-sand")
-      ) {
+      if (project.includes("-sand")) {
         return;
       }
 
-
-      // Allowed tasks only
-      if (
-        !ALLOWED_TASKS.includes(task)
-      ) {
+      // Only allowed tasks
+      if (!ALLOWED_TASKS.includes(task)) {
         return;
       }
 
+      // Valid datapoints
+      const validPoints =
+        series.datapoints?.filter(dp => dp[0] !== null);
 
-      const last =
-        getLastValue(series);
-
-
-      if (!last) {
+      if (!validPoints?.length) {
         return;
       }
 
+      const lastPoint =
+        validPoints[validPoints.length - 1];
 
-      const key =
-        firebaseKey(
-          project,
-          task
-        );
+      const value = Number(lastPoint[0]);
 
+      const key = `${project}_${task}`;
 
-      // ==================================================
-      // CREATE RECORD
-      // ==================================================
+      if (!grouped[key]) {
 
-      if (!records[key]) {
-
-        records[key] = {
-
+        grouped[key] = {
           project,
           task,
-
           value: null,
 
+          // Raw duration seconds
           durationRaw: null,
 
+          // Human readable duration
           duration: null,
 
-          lastUpdated: null
+          lastUpdated: new Date().toISOString()
         };
       }
 
 
-      // ==================================================
-      // TOTAL VALUE
-      // ==================================================
+      // ========================================
+      // TOTAL
+      // ========================================
 
       if (type === "total") {
 
-        records[key].value =
-          last.value;
+        grouped[key].value = value;
       }
 
 
-      // ==================================================
-      // DURATION
-      // ==================================================
+      // ========================================
+      // OLDEST TASK / DURATION
+      // ========================================
 
-      if (
-        type === "oldestTask"
-      ) {
+      if (type === "oldestTask") {
 
-        records[key].durationRaw =
-          last.value;
+        grouped[key].durationRaw = value;
 
-        records[key].duration =
-          formatDuration(
-            last.value
-          );
+        grouped[key].duration =
+          formatDuration(value);
       }
-
-
-      records[key].lastUpdated =
-        new Date().toISOString();
 
     });
 
 
-    // ==================================================
-    // PREPARE FIREBASE PATCH
-    // ==================================================
-
-    const updates = {};
+    // Convert object -> array
+    const output = Object.values(grouped);
 
 
-    Object.entries(records).forEach(
-      ([key, newRecord]) => {
-
-        const oldRecord =
-          existingData[key] || {};
-
-
-        /*
-          IMPORTANT:
-
-          If Grafana returns BOTH:
-
-          value
-          durationRaw
-          duration
-
-          all three are updated together.
-
-          If one is temporarily missing,
-          old value is preserved.
-
-          NOTHING IS DELETED.
-        */
-
-        const finalRecord = {
-
-          project:
-            newRecord.project ??
-            oldRecord.project ??
-            null,
-
-          task:
-            newRecord.task ??
-            oldRecord.task ??
-            null,
-
-          value:
-            newRecord.value !== null
-              ? newRecord.value
-              : (
-                  oldRecord.value ??
-                  null
-                ),
-
-          durationRaw:
-            newRecord.durationRaw !== null
-              ? newRecord.durationRaw
-              : (
-                  oldRecord.durationRaw ??
-                  null
-                ),
-
-          duration:
-            newRecord.duration !== null
-              ? newRecord.duration
-              : (
-                  oldRecord.duration ??
-                  null
-                ),
-
-          lastUpdated:
-            newRecord.lastUpdated ??
-            oldRecord.lastUpdated ??
-            new Date().toISOString()
-        };
-
-
-        // ==================================================
-        // UPDATE ONLY WHEN SOMETHING CHANGED
-        // ==================================================
-
-        const changed =
-          JSON.stringify(finalRecord) !==
-          JSON.stringify(oldRecord);
-
-
-        if (changed) {
-
-          updates[key] =
-            finalRecord;
-
-          console.log(
-            `🔄 ${newRecord.project} | ` +
-            `${newRecord.task} | ` +
-            `Queue: ${finalRecord.value} | ` +
-            `Duration: ${finalRecord.duration}`
-          );
-
-        } else {
-
-          console.log(
-            `⏭️ ${newRecord.project} | ` +
-            `${newRecord.task} | No change`
-          );
-
-        }
-
-      }
+    // Sort by queue value
+    output.sort((a, b) =>
+      (b.value || 0) - (a.value || 0)
     );
 
 
-    // ==================================================
-    // FIREBASE PATCH
-    // ==================================================
+    // ========================================
+    // FIREBASE
+    // ========================================
 
-    if (
-      Object.keys(updates).length > 0
-    ) {
-
-      await axios.patch(
-        `${FIREBASE_BASE_URL}.json`,
-        updates,
-        {
-          headers: {
-            "Content-Type":
-              "application/json"
-          }
-        }
-      );
-
-
-      console.log(
-        `🚀 Firebase updated: ` +
-        `${Object.keys(updates).length} records`
-      );
-
-    } else {
-
-      console.log(
-        "✅ No changes detected"
-      );
-
-    }
+    await axios.put(
+      FIREBASE_URL,
+      output
+    );
 
 
     console.log(
-      "======================================"
+      `Updated Firebase (${output.length} records)`,
+      new Date().toLocaleTimeString()
     );
+
+
+    // ========================================
+    // CONSOLE PREVIEW
+    // ========================================
+
+    console.log("\n------------------------------");
+    console.log("GRAFANA DATA");
+    console.log("------------------------------");
+
+    output.slice(0, 10).forEach(item => {
+
+      console.log(
+        `${item.project} | ` +
+        `${item.task} | ` +
+        `Queue: ${item.value} | ` +
+        `Duration: ${item.duration} | ` +
+        `Raw: ${item.durationRaw}`
+      );
+
+    });
+
+    console.log("------------------------------\n");
+
 
   } catch (err) {
 
     console.error(
-      "❌ ERROR:",
-      err.response?.status || "",
+      err.response?.status,
       err.message
     );
 
@@ -598,19 +343,11 @@ async function fetchAndPush() {
 }
 
 
-// ======================================================
+// ========================================
 // START
-// ======================================================
-
-console.log("");
-console.log("======================================");
-console.log("🚀 Grafana → Firebase Monitor");
-console.log("⏱️ Update: Every 30 seconds");
-console.log("======================================");
-
+// ========================================
 
 fetchAndPush();
-
 
 setInterval(
   fetchAndPush,
